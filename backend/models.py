@@ -55,6 +55,8 @@ class InvestigationReport(BaseModel):
     flags: list[str]
     processing_time_ms: int
     model_used: str
+    constitutional_check_passed: bool = True
+    canary: str = ""
 
 
 class InvestigateRequest(BaseModel):
