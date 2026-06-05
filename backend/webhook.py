@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -24,7 +25,7 @@ _engine = InvestigationEngine()
 async def webhook_alert(request: Request):
     secret = request.headers.get("X-Webhook-Secret")
     expected = os.getenv("FRAUDOS_WEBHOOK_SECRET", "")
-    if not secret or not expected or secret != expected:
+    if not secret or not expected or not hmac.compare_digest(secret, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook secret")
 
     body = await request.json()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -40,7 +41,7 @@ def _clear_session_cookie(response: Response) -> None:
 @router.post("/auth")
 async def login(body: _LoginRequest, response: Response):
     expected = os.getenv("FRAUDOS_API_KEY", "dev-key-change-in-production")
-    if body.api_key != expected:
+    if not hmac.compare_digest(body.api_key, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
 
     token = secrets.token_urlsafe(32)
@@ -86,7 +87,7 @@ async def get_current_session(request: Request) -> dict:
         api_key = request.headers.get("x-api-key") or request.headers.get("X-API-Key")
         if api_key:
             expected = os.getenv("FRAUDOS_API_KEY", "dev-key-change-in-production")
-            if api_key == expected:
+            if hmac.compare_digest(api_key, expected):
                 return {"api_key_suffix": api_key[-4:]}
 
     if token is None:
