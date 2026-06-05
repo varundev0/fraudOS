@@ -1,11 +1,33 @@
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const getKey = () => sessionStorage.getItem('fraudos_key') || '';
+
+// Refuse to send the API key over plain HTTP outside localhost — it would travel in cleartext.
+const isLocalhost = (url) => /^https?:\/\/(localhost|127\.|0\.0\.0\.0)/.test(url);
+const assertHttps = (url) => {
+  if (url.startsWith('http://') && !isLocalhost(url)) {
+    throw new Error('Insecure connection: API URL must use HTTPS in non-local environments');
+  }
+};
+
+// Treat any non-2xx response as an error without leaking the raw server body.
+const parseResponse = async (r) => {
+  if (!r.ok) throw new Error(`Request failed (${r.status})`);
+  return r.json();
+};
+
 export const api = {
-  post: (path, body) => fetch(`${BASE}${path}`, {
-    method:'POST', headers:{'Content-Type':'application/json','X-API-Key':getKey()},
-    body:JSON.stringify(body)
-  }).then(r => r.json()),
-  get: (path) => fetch(`${BASE}${path}`, { headers:{'X-API-Key':getKey()} }).then(r => r.json()),
+  post: (path, body) => {
+    assertHttps(BASE);
+    return fetch(`${BASE}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': getKey() },
+      body: JSON.stringify(body),
+    }).then(parseResponse);
+  },
+  get: (path) => {
+    assertHttps(BASE);
+    return fetch(`${BASE}${path}`, { headers: { 'X-API-Key': getKey() } }).then(parseResponse);
+  },
 };
 export const MOCK_CASES = [
   { case_id:'CASE-001', alert_type:'UPI_FRAUD', risk_level:'HIGH', risk_score:87, recommended_action:'ESCALATE', amount:49500, currency:'INR', received_at:'2024-06-01T02:14:00Z', investigation_narrative:'Account opened 12 days ago initiated ₹49,500 UPI transfer just below reporting threshold at 2AM to unknown payee. Classic structuring pattern.', flags:['Threshold structuring','New account','Unusual hour'], confidence:0.91, entity_profile:{summary:'New account, 12 days old, no prior transaction history',risk_indicators:['New account','No payee history'],account_age_assessment:'High risk'}, transaction_pattern:{pattern_type:'Threshold structuring',anomalies:['Amount ₹49,500 — just below ₹50,000 CTR limit','Transaction at 02:14 AM'],velocity_assessment:'Single high-value transaction on new account'}, risk_assessment:'Transaction exhibits classic threshold-structuring behavior. New account with no history initiating a near-threshold UPI transfer to an unregistered payee at 2AM presents high fraud probability.', processing_time_ms:1840, model_used:'claude-opus-4-6' },

@@ -28,9 +28,12 @@ export default function CaseDetail() {
   const riskColor = { CRITICAL:'var(--risk-block)', HIGH:'var(--risk-escalate)', MEDIUM:'var(--risk-review)', LOW:'var(--risk-clear)' }[c.risk_level] || 'var(--muted)';
 
   const submitDecision = () => {
-    const log = JSON.parse(localStorage.getItem('fraudos_decisions') || '[]');
+    // sessionStorage (not localStorage) keeps decisions — and any analyst notes that may
+    // contain PII — scoped to the current browser session. They clear on tab close,
+    // matching the lifetime of the API key.
+    const log = JSON.parse(sessionStorage.getItem('fraudos_decisions') || '[]');
     log.push({ case_id:c.case_id, decision, notes, analyst:'Analyst', timestamp:new Date().toISOString() });
-    localStorage.setItem('fraudos_decisions', JSON.stringify(log));
+    sessionStorage.setItem('fraudos_decisions', JSON.stringify(log));
     setSubmitted(true);
   };
 
