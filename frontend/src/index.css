@@ -1,0 +1,11 @@
+:root {
+  --bg: #08080f; --surface: #0f0f1a; --surface2: #141420;
+  --border: #1c1c2e; --text: #f1f5f9; --muted: #475569;
+  --cyan: #06b6d4; --purple: #7c3aed;
+  --risk-block: #ef4444; --risk-escalate: #f59e0b;
+  --risk-review: #06b6d4; --risk-clear: #22c55e;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:system-ui,sans-serif; }
+button { cursor:pointer; font-family:inherit; }
+input, textarea, select { font-family:inherit; }
