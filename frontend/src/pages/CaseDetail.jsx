@@ -1,6 +1,6 @@
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
 import { useState } from 'react';
-import { MOCK_CASES } from '../api/client';
+import { MOCK_CASES, api } from '../api/client';
 import Sidebar from '../components/Sidebar';
 import RiskBadge from '../components/RiskBadge';
 import AlertTypeBadge from '../components/AlertTypeBadge';
@@ -23,24 +23,41 @@ export default function CaseDetail() {
   const [decision, setDecision] = useState('');
   const [notes, setNotes] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [decisionError, setDecisionError] = useState('');
 
   const fmt = new Intl.NumberFormat('en-IN', { style:'currency', currency:'INR', maximumFractionDigits:0 });
   const riskColor = { CRITICAL:'var(--risk-block)', HIGH:'var(--risk-escalate)', MEDIUM:'var(--risk-review)', LOW:'var(--risk-clear)' }[c.risk_level] || 'var(--muted)';
 
-  const submitDecision = () => {
-    // sessionStorage (not localStorage) keeps decisions — and any analyst notes that may
-    // contain PII — scoped to the current browser session. They clear on tab close,
-    // matching the lifetime of the API key.
-    const log = JSON.parse(sessionStorage.getItem('fraudos_decisions') || '[]');
-    log.push({ case_id:c.case_id, decision, notes, analyst:'Analyst', timestamp:new Date().toISOString() });
-    sessionStorage.setItem('fraudos_decisions', JSON.stringify(log));
-    setSubmitted(true);
+  const submitDecision = async () => {
+    if (!decision) return;
+    setDecisionError('');
+    try {
+      await api.post(`/api/investigations/${c.case_id}/decision`, { decision, notes });
+      setSubmitted(true);
+    } catch {
+      setDecisionError('Failed to submit decision — please retry');
+    }
+  };
+
+  const exportSar = async () => {
+    try {
+      const text = await api.getText(`/api/investigations/${c.case_id}/sar`);
+      const blob = new Blob([text], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `SAR_DRAFT_${c.case_id}.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setDecisionError('Failed to export SAR — case may not be persisted yet');
+    }
   };
 
   if (!c.case_id) return (
     <div style={{ display:'flex' }}>
       <Sidebar analyst={{ name:'Fraud Analyst' }} />
-      <main style={{ marginLeft:220, flex:1, padding:'40px 28px', color:'var(--muted)' }}>Case not found. <button onClick={()=>nav('/')} style={{ background:'none', border:'none', color:'var(--cyan)', cursor:'pointer' }}>← Back</button></main>
+      <main style={{ marginLeft:220, flex:1, padding:'40px 28px', color:'var(--muted)' }}>Case not found. <button onClick={() => nav('/')} style={{ background:'none', border:'none', color:'var(--cyan)', cursor:'pointer' }}>← Back</button></main>
     </div>
   );
 
@@ -48,7 +65,7 @@ export default function CaseDetail() {
     <div style={{ display:'flex' }}>
       <Sidebar analyst={{ name:'Fraud Analyst' }} />
       <main style={{ marginLeft:220, flex:1, padding:'24px 28px', paddingBottom:110, minHeight:'100vh' }}>
-        <button onClick={()=>nav('/')} style={{ background:'none', border:'none', color:'var(--muted)', fontSize:'0.8rem', marginBottom:18, letterSpacing:'0.05em', cursor:'pointer' }}>← Case Queue</button>
+        <button onClick={() => nav('/')} style={{ background:'none', border:'none', color:'var(--muted)', fontSize:'0.8rem', marginBottom:18, letterSpacing:'0.05em', cursor:'pointer' }}>← Case Queue</button>
 
         {/* Header */}
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:18, flexWrap:'wrap' }}>
@@ -126,7 +143,7 @@ export default function CaseDetail() {
           </div>
         )}
 
-        {/* Investigation Narrative — AI generated */}
+        {/* Investigation Narrative */}
         {c.investigation_narrative && (
           <div style={card({ borderLeft:'2px solid var(--purple)' })}>
             <span style={lbl}>Investigation Narrative <span style={{ color:'var(--purple)', fontSize:'0.58rem' }}>· AI GENERATED</span></span>
@@ -135,18 +152,20 @@ export default function CaseDetail() {
         )}
       </main>
 
-      {/* Decision panel */}
-      <div style={{ position:'fixed', bottom:0, left:220, right:0, background:'var(--surface)', borderTop:'1px solid var(--border)', padding:'12px 24px', display:'flex', gap:10, alignItems:'center', zIndex:50 }}>
+      {/* Decision + SAR panel */}
+      <div style={{ position:'fixed', bottom:0, left:220, right:0, background:'var(--surface)', borderTop:'1px solid var(--border)', padding:'12px 24px', display:'flex', gap:10, alignItems:'center', zIndex:50, flexWrap:'wrap' }}>
         {submitted
           ? <span style={{ color:'var(--risk-clear)', fontWeight:600, fontSize:'0.85rem', letterSpacing:'0.05em' }}>✓ Decision recorded</span>
           : <>
-            {DECISION_BTNS.map(({a,c:col}) => (
-              <button key={a} onClick={()=>setDecision(a)} style={{ background: decision===a ? col : 'transparent', border:`1px solid ${col}`, color: decision===a ? '#000' : col, padding:'7px 16px', fontWeight:700, letterSpacing:'0.08em', fontSize:'0.78rem', transition:'all 0.15s' }}>{a}</button>
+            {DECISION_BTNS.map(({ a, c: col }) => (
+              <button key={a} onClick={() => setDecision(a)} style={{ background: decision === a ? col : 'transparent', border:`1px solid ${col}`, color: decision === a ? '#000' : col, padding:'7px 16px', fontWeight:700, letterSpacing:'0.08em', fontSize:'0.78rem', transition:'all 0.15s' }}>{a}</button>
             ))}
-            <textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Analyst notes..." style={{ flex:1, background:'var(--surface2)', border:'1px solid var(--border)', color:'var(--text)', padding:'7px 12px', fontSize:'0.83rem', resize:'none', height:36, outline:'none' }} />
+            <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Analyst notes..." style={{ flex:1, minWidth:120, background:'var(--surface2)', border:'1px solid var(--border)', color:'var(--text)', padding:'7px 12px', fontSize:'0.83rem', resize:'none', height:36, outline:'none' }} />
             <button onClick={submitDecision} disabled={!decision} style={{ background: decision ? 'var(--cyan)' : 'var(--surface2)', border:'none', color: decision ? '#000' : 'var(--muted)', padding:'8px 18px', fontWeight:700, letterSpacing:'0.08em', fontSize:'0.8rem', whiteSpace:'nowrap' }}>SUBMIT DECISION</button>
           </>
         }
+        <button onClick={exportSar} style={{ background:'transparent', border:'1px solid var(--border)', color:'var(--muted)', padding:'7px 14px', fontWeight:600, letterSpacing:'0.06em', fontSize:'0.75rem', whiteSpace:'nowrap' }}>EXPORT SAR DRAFT</button>
+        {decisionError && <span style={{ color:'var(--risk-block)', fontSize:'0.78rem' }}>{decisionError}</span>}
       </div>
     </div>
   );

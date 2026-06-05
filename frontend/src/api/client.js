@@ -1,34 +1,76 @@
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const getKey = () => sessionStorage.getItem('fraudos_key') || '';
+// All requests use relative URLs so the Vite dev proxy (→ :8000) and the
+// production reverse-proxy both work without configuration changes.
+const BASE = import.meta.env.VITE_API_URL || '';
 
-// Refuse to send the API key over plain HTTP outside localhost — it would travel in cleartext.
-const isLocalhost = (url) => /^https?:\/\/(localhost|127\.|0\.0\.0\.0)/.test(url);
+// Only block explicit non-localhost http:// URLs (relative paths are fine).
+const isLocalhost = (url) => !url || /^https?:\/\/(localhost|127\.|0\.0\.0\.0)/.test(url);
 const assertHttps = (url) => {
-  if (url.startsWith('http://') && !isLocalhost(url)) {
+  if (url && url.startsWith('http://') && !isLocalhost(url)) {
     throw new Error('Insecure connection: API URL must use HTTPS in non-local environments');
   }
 };
 
-// Treat any non-2xx response as an error without leaking the raw server body.
+const handle401 = () => {
+  window.location.replace('/login');
+};
+
 const parseResponse = async (r) => {
+  if (r.status === 401) { handle401(); throw new Error('Not authenticated'); }
   if (!r.ok) throw new Error(`Request failed (${r.status})`);
   return r.json();
 };
 
+const parseTextResponse = async (r) => {
+  if (r.status === 401) { handle401(); throw new Error('Not authenticated'); }
+  if (!r.ok) throw new Error(`Request failed (${r.status})`);
+  return r.text();
+};
+
 export const api = {
+  login: async (apiKey) => {
+    assertHttps(BASE);
+    const r = await fetch(`${BASE}/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+    if (r.status === 401) throw new Error('Invalid API key');
+    if (!r.ok) throw new Error(`Request failed (${r.status})`);
+    return r.json();
+  },
+
+  checkAuth: () => {
+    assertHttps(BASE);
+    return fetch(`${BASE}/auth/me`, { credentials: 'include' });
+  },
+
+  logout: async () => {
+    await fetch(`${BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+    window.location.replace('/login');
+  },
+
   post: (path, body) => {
     assertHttps(BASE);
     return fetch(`${BASE}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': getKey() },
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(body),
     }).then(parseResponse);
   },
+
   get: (path) => {
     assertHttps(BASE);
-    return fetch(`${BASE}${path}`, { headers: { 'X-API-Key': getKey() } }).then(parseResponse);
+    return fetch(`${BASE}${path}`, { credentials: 'include' }).then(parseResponse);
+  },
+
+  getText: (path) => {
+    assertHttps(BASE);
+    return fetch(`${BASE}${path}`, { credentials: 'include' }).then(parseTextResponse);
   },
 };
+
 export const MOCK_CASES = [
   { case_id:'CASE-001', alert_type:'UPI_FRAUD', risk_level:'HIGH', risk_score:87, recommended_action:'ESCALATE', amount:49500, currency:'INR', received_at:'2024-06-01T02:14:00Z', investigation_narrative:'Account opened 12 days ago initiated ₹49,500 UPI transfer just below reporting threshold at 2AM to unknown payee. Classic structuring pattern.', flags:['Threshold structuring','New account','Unusual hour'], confidence:0.91, entity_profile:{summary:'New account, 12 days old, no prior transaction history',risk_indicators:['New account','No payee history'],account_age_assessment:'High risk'}, transaction_pattern:{pattern_type:'Threshold structuring',anomalies:['Amount ₹49,500 — just below ₹50,000 CTR limit','Transaction at 02:14 AM'],velocity_assessment:'Single high-value transaction on new account'}, risk_assessment:'Transaction exhibits classic threshold-structuring behavior. New account with no history initiating a near-threshold UPI transfer to an unregistered payee at 2AM presents high fraud probability.', processing_time_ms:1840, model_used:'claude-opus-4-6' },
   { case_id:'CASE-002', alert_type:'CARD_FRAUD', risk_level:'CRITICAL', risk_score:96, recommended_action:'BLOCK', amount:285000, currency:'INR', received_at:'2024-06-01T03:45:00Z', investigation_narrative:'International card transaction of ₹2,85,000 on an account dormant for 8 months. Geolocation mismatch — card used in Dubai while account holder is India-based.', flags:['Geo mismatch','Dormant account','High value international'], confidence:0.97, entity_profile:{summary:'Account dormant for 8 months, reactivated with international transaction',risk_indicators:['8 months dormant','Geolocation mismatch'],account_age_assessment:'Established account, suspicious reactivation'}, transaction_pattern:{pattern_type:'International card fraud',anomalies:['Geolocation: Dubai vs India-registered','Account dormant 8 months','₹2.85L single transaction'],velocity_assessment:'First transaction after 8-month dormancy is high-value international'}, risk_assessment:'Dormant account reactivated with a high-value international transaction from a mismatched geolocation is a strong indicator of card compromise or account takeover.', processing_time_ms:1620, model_used:'claude-opus-4-6' },
