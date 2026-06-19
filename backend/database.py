@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_investigations_created_at ON investigations(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_investigations_alert_type ON investigations(alert_type);
 CREATE INDEX IF NOT EXISTS idx_investigations_risk_level ON investigations(risk_level);
 CREATE INDEX IF NOT EXISTS idx_investigations_action ON investigations(recommended_action);
 CREATE INDEX IF NOT EXISTS idx_investigations_sla ON investigations(sla_notified_at, created_at);

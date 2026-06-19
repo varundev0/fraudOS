@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .auth import get_current_session, seed_admin_user, router as auth_router
+from .auth import get_current_session, require_role, seed_admin_user, router as auth_router
 from .config import settings
 from .database import close_db, get_db, init_db, store_investigation
 from .investigation.engine_instance import engine as _engine
@@ -27,7 +27,7 @@ from .models import InvestigateRequest, InvestigateResponse
 from .notifications import notify_critical_case, notification_status
 from .sar_formatter import format_sar
 from .tests.synthetic_alerts import SYNTHETIC_ALERTS
-from .webhook import router as webhook_router
+from .webhook import prune_seen_signatures, router as webhook_router
 from .ws import manager as _ws_manager
 
 _logger = logging.getLogger(__name__)
@@ -54,6 +54,11 @@ def _check_rate_limit(key: str) -> None:
     if len(_rate_limit_store[key]) >= settings.rate_limit_max:
         raise _RateLimitExceeded
     _rate_limit_store[key].append(now)
+
+
+_login_rate_limit_store: dict[str, list[float]] = defaultdict(list)
+_LOGIN_RATE_LIMIT_MAX = 10
+_LOGIN_RATE_LIMIT_WINDOW = 60  # 1 minute
 
 
 # ── SLA computation ───────────────────────────────────────────────────────────
@@ -146,6 +151,20 @@ async def _session_cleanup_loop() -> None:
         except Exception:
             _logger.exception("Session cleanup failed")
 
+        # ── Rate limit store pruning ─────────────────────────────────────────
+        try:
+            _now = time.time()
+            for _store, _window in [
+                (_rate_limit_store, settings.rate_limit_window),
+                (_login_rate_limit_store, float(_LOGIN_RATE_LIMIT_WINDOW)),
+            ]:
+                _stale = [k for k, ts in _store.items() if not any(t > _now - _window for t in ts)]
+                for k in _stale:
+                    del _store[k]
+            prune_seen_signatures()
+        except Exception:
+            _logger.exception("Rate limit store cleanup failed")
+
         # ── SLA overdue notifications ────────────────────────────────────────
         # Find cases that just crossed their SLA deadline and haven't been notified yet.
         overdue_rows = []
@@ -227,6 +246,9 @@ app = FastAPI(
     description="AI-native fraud investigation engine",
     version=_VERSION,
     lifespan=lifespan,
+    docs_url="/docs" if _FRAUDOS_ENV == "development" else None,
+    redoc_url="/redoc" if _FRAUDOS_ENV == "development" else None,
+    openapi_url="/openapi.json" if _FRAUDOS_ENV == "development" else None,
 )
 
 
@@ -242,6 +264,8 @@ class _SecurityHeaders(BaseHTTPMiddleware):
         response.headers["Content-Security-Policy"] = (
             "default-src 'none'; frame-ancestors 'none'"
         )
+        if _FRAUDOS_ENV != "development":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
 
 
@@ -254,15 +278,30 @@ class _AddRequestID(BaseHTTPMiddleware):
         return response
 
 
+class _LoginRateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "POST" and request.url.path == "/auth":
+            ip = request.client.host if request.client else "unknown"
+            now = time.time()
+            cutoff = now - _LOGIN_RATE_LIMIT_WINDOW
+            timestamps = [t for t in _login_rate_limit_store[ip] if t > cutoff]
+            if len(timestamps) >= _LOGIN_RATE_LIMIT_MAX:
+                return JSONResponse(status_code=429, content={"error": "Too many login attempts"})
+            timestamps.append(now)
+            _login_rate_limit_store[ip] = timestamps
+        return await call_next(request)
+
+
 app.add_middleware(_SecurityHeaders)
 app.add_middleware(_AddRequestID)
+app.add_middleware(_LoginRateLimitMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
     allow_credentials=True,   # required for HttpOnly session cookies
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["Content-Type"],
 )
 
 
@@ -312,7 +351,7 @@ async def websocket_endpoint(websocket: WebSocket):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
-async def health():
+async def health(session: dict = Depends(get_current_session)):
     return {
         "status": "ok",
         "model": _MODEL,
@@ -404,13 +443,13 @@ async def list_investigations(
     alert_type: Optional[str] = None,
     risk_level: Optional[str] = None,
     recommended_action: Optional[str] = None,
-    search: Optional[str] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
+    search: Optional[str] = Query(default=None, max_length=500),
+    date_from: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     amount_min: Optional[float] = None,
     amount_max: Optional[float] = None,
     limit: int = Query(default=50, ge=1, le=500),
-    offset: int = 0,
+    offset: int = Query(default=0, ge=0),
     session: dict = Depends(get_current_session),
 ):
     conditions = ["1=1"]
@@ -531,7 +570,7 @@ async def submit_decision(
 
 
 @app.get("/api/notifications/status")
-async def get_notification_status(session: dict = Depends(get_current_session)):
+async def get_notification_status(session: dict = Depends(require_role("ADMIN", "SUPERVISOR"))):
     return notification_status()
 
 

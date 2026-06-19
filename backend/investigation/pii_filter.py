@@ -26,7 +26,9 @@ _PHONE_RE = re.compile(r"\b(?:\+91[-\s]?)?[6-9]\d{9}\b")
 
 
 def _hmac_hash(value: str) -> str:
-    secret = os.getenv("FRAUDOS_TOKEN_SECRET", "default-insecure-secret-change-me")
+    secret = os.getenv("FRAUDOS_TOKEN_SECRET")
+    if not secret:
+        raise RuntimeError("FRAUDOS_TOKEN_SECRET environment variable must be set")
     return hmac.new(
         secret.encode(), value.encode(), hashlib.sha256
     ).hexdigest()[:20].upper()

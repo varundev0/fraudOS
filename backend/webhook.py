@@ -28,6 +28,18 @@ router = APIRouter()
 _MAX_WEBHOOK_BODY_BYTES = 64 * 1024  # 64 KB
 _REPLAY_WINDOW_SECONDS = 300         # 5 minutes
 
+# In-memory replay protection: maps verified signature → timestamp it was first seen.
+# Entries older than _REPLAY_WINDOW_SECONDS are pruned by the session cleanup loop.
+_seen_signatures: dict[str, float] = {}
+
+
+def prune_seen_signatures() -> None:
+    """Remove replay-protection entries older than the replay window (called from cleanup loop)."""
+    cutoff = time.time() - _REPLAY_WINDOW_SECONDS
+    expired = [sig for sig, ts in _seen_signatures.items() if ts < cutoff]
+    for sig in expired:
+        del _seen_signatures[sig]
+
 
 async def _investigate_and_store(alert: FraudAlert, client_ip: str, received_at: datetime) -> None:
     """Background coroutine: run investigation, persist, broadcast, notify."""
@@ -113,11 +125,18 @@ async def webhook_alert(request: Request):
     if not hmac.compare_digest(sig_header, expected_sig):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook signature")
 
+    # Replay protection: reject a signature we've already accepted within the replay window
+    now_ts = time.time()
+    if sig_header in _seen_signatures and now_ts - _seen_signatures[sig_header] < _REPLAY_WINDOW_SECONDS:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Duplicate webhook")
+    _seen_signatures[sig_header] = now_ts
+
     try:
         body = json.loads(body_bytes)
         alert = FraudAlert(**body)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        _logger.warning("Webhook payload parse error: %s", exc)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request payload") from exc
 
     client_ip = request.client.host if request.client else "unknown"
     now = datetime.now(timezone.utc)
