@@ -1,5 +1,6 @@
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { MOCK_CASES, api } from '../api/client';
 import Sidebar from '../components/Sidebar';
 import RiskBadge from '../components/RiskBadge';
@@ -19,17 +20,33 @@ export default function CaseDetail() {
   const { caseId } = useParams();
   const { state } = useLocation();
   const nav = useNavigate();
-  const c = state?.caseData || MOCK_CASES.find(x => x.case_id === caseId) || {};
+  const hasStateData = !!state?.caseData;
+
+  const { data: apiCase, isLoading } = useQuery({
+    queryKey: ['investigation', caseId],
+    queryFn: () => api.get(`/api/investigations/${caseId}`),
+    enabled: !hasStateData,
+    retry: 1,
+    staleTime: 30_000,
+  });
+
+  const c = state?.caseData || apiCase || MOCK_CASES.find(x => x.case_id === caseId) || {};
   const [decision, setDecision] = useState('');
   const [notes, setNotes] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [decisionError, setDecisionError] = useState('');
+  const [blockConfirm, setBlockConfirm] = useState(false);
 
   const fmt = new Intl.NumberFormat('en-IN', { style:'currency', currency:'INR', maximumFractionDigits:0 });
   const riskColor = { CRITICAL:'var(--risk-block)', HIGH:'var(--risk-escalate)', MEDIUM:'var(--risk-review)', LOW:'var(--risk-clear)' }[c.risk_level] || 'var(--muted)';
 
   const submitDecision = async () => {
     if (!decision) return;
+    if (decision === 'BLOCK' && !blockConfirm) {
+      setBlockConfirm(true);
+      return;
+    }
+    setBlockConfirm(false);
     setDecisionError('');
     try {
       await api.post(`/api/investigations/${c.case_id}/decision`, { decision, notes });
@@ -37,6 +54,11 @@ export default function CaseDetail() {
     } catch {
       setDecisionError('Failed to submit decision — please retry');
     }
+  };
+
+  const handleDecisionSelect = (a) => {
+    setDecision(a);
+    setBlockConfirm(false);
   };
 
   const exportSar = async () => {
@@ -53,6 +75,13 @@ export default function CaseDetail() {
       setDecisionError('Failed to export SAR — case may not be persisted yet');
     }
   };
+
+  if (isLoading && !hasStateData) return (
+    <div style={{ display:'flex' }}>
+      <Sidebar analyst={{ name:'Fraud Analyst' }} />
+      <main style={{ marginLeft:220, flex:1, padding:'40px 28px', color:'var(--muted)' }}>Loading case...</main>
+    </div>
+  );
 
   if (!c.case_id) return (
     <div style={{ display:'flex' }}>
@@ -158,10 +187,17 @@ export default function CaseDetail() {
           ? <span style={{ color:'var(--risk-clear)', fontWeight:600, fontSize:'0.85rem', letterSpacing:'0.05em' }}>✓ Decision recorded</span>
           : <>
             {DECISION_BTNS.map(({ a, c: col }) => (
-              <button key={a} onClick={() => setDecision(a)} style={{ background: decision === a ? col : 'transparent', border:`1px solid ${col}`, color: decision === a ? '#000' : col, padding:'7px 16px', fontWeight:700, letterSpacing:'0.08em', fontSize:'0.78rem', transition:'all 0.15s' }}>{a}</button>
+              <button key={a} onClick={() => handleDecisionSelect(a)} style={{ background: decision === a ? col : 'transparent', border:`1px solid ${col}`, color: decision === a ? '#000' : col, padding:'7px 16px', fontWeight:700, letterSpacing:'0.08em', fontSize:'0.78rem', transition:'all 0.15s' }}>{a}</button>
             ))}
             <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Analyst notes..." style={{ flex:1, minWidth:120, background:'var(--surface2)', border:'1px solid var(--border)', color:'var(--text)', padding:'7px 12px', fontSize:'0.83rem', resize:'none', height:36, outline:'none' }} />
-            <button onClick={submitDecision} disabled={!decision} style={{ background: decision ? 'var(--cyan)' : 'var(--surface2)', border:'none', color: decision ? '#000' : 'var(--muted)', padding:'8px 18px', fontWeight:700, letterSpacing:'0.08em', fontSize:'0.8rem', whiteSpace:'nowrap' }}>SUBMIT DECISION</button>
+            {blockConfirm && (
+              <span style={{ color:'var(--risk-block)', fontSize:'0.78rem', fontWeight:600, whiteSpace:'nowrap' }}>
+                ⚠ BLOCK is irreversible — click Submit again to confirm.
+              </span>
+            )}
+            <button onClick={submitDecision} disabled={!decision} style={{ background: decision ? (blockConfirm ? 'var(--risk-block)' : 'var(--cyan)') : 'var(--surface2)', border:'none', color: decision ? '#000' : 'var(--muted)', padding:'8px 18px', fontWeight:700, letterSpacing:'0.08em', fontSize:'0.8rem', whiteSpace:'nowrap' }}>
+              {blockConfirm ? 'CONFIRM BLOCK' : 'SUBMIT DECISION'}
+            </button>
           </>
         }
         <button onClick={exportSar} style={{ background:'transparent', border:'1px solid var(--border)', color:'var(--muted)', padding:'7px 14px', fontWeight:600, letterSpacing:'0.06em', fontSize:'0.75rem', whiteSpace:'nowrap' }}>EXPORT SAR DRAFT</button>

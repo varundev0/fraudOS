@@ -29,7 +29,7 @@ def _hmac_hash(value: str) -> str:
     secret = os.getenv("FRAUDOS_TOKEN_SECRET", "default-insecure-secret-change-me")
     return hmac.new(
         secret.encode(), value.encode(), hashlib.sha256
-    ).hexdigest()[:12].upper()
+    ).hexdigest()[:20].upper()
 
 
 def _tokenize_value(key: str, value: Any, mapping: dict[str, str]) -> Any:

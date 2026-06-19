@@ -8,6 +8,8 @@ export default defineConfig({
       '/api': { target: 'http://localhost:8000', changeOrigin: true },
       '/auth': { target: 'http://localhost:8000', changeOrigin: true },
       '/webhook': { target: 'http://localhost:8000', changeOrigin: true },
+      '/users': { target: 'http://localhost:8000', changeOrigin: true },
+      '/ws': { target: 'http://localhost:8000', ws: true, changeOrigin: true },
     },
   },
 })

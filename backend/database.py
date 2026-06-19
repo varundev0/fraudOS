@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, AsyncGenerator
 
 import asyncpg
 
+from .config import settings
+
 if TYPE_CHECKING:
     from .models import FraudAlert, InvestigationReport
 
@@ -19,6 +21,17 @@ _pool: asyncpg.Pool | None = None
 _DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/fraudos")
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    full_name TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'ANALYST' CHECK (role IN ('ANALYST', 'SUPERVISOR', 'ADMIN')),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    last_login TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS investigations (
     case_id TEXT PRIMARY KEY,
     alert_type TEXT NOT NULL,
@@ -63,11 +76,36 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE TABLE IF NOT EXISTS sessions (
     session_token TEXT PRIMARY KEY,
-    api_key_suffix TEXT NOT NULL,
+    api_key_suffix TEXT,
+    user_id UUID REFERENCES users(id),
+    user_email TEXT,
+    user_role TEXT,
+    full_name TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     expires_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_investigations_created_at ON investigations(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_investigations_risk_level ON investigations(risk_level);
+CREATE INDEX IF NOT EXISTS idx_investigations_action ON investigations(recommended_action);
+CREATE INDEX IF NOT EXISTS idx_investigations_sla ON investigations(sla_notified_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_analyst_decisions_case_id ON analyst_decisions(case_id);
+CREATE INDEX IF NOT EXISTS idx_investigations_narrative_fts ON investigations
+    USING GIN(to_tsvector('english', coalesce(investigation_narrative, '')));
 """
+
+# Idempotent migrations for existing installs
+_MIGRATIONS = [
+    # Multi-user auth (v0.4): add user columns to sessions
+    "ALTER TABLE sessions ALTER COLUMN api_key_suffix DROP NOT NULL",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id)",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_email TEXT",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_role TEXT",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS full_name TEXT",
+    # Real-time + notifications (v0.5): track which cases triggered SLA alerts
+    "ALTER TABLE investigations ADD COLUMN IF NOT EXISTS sla_notified_at TIMESTAMPTZ",
+]
 
 
 async def _init_connection(conn: asyncpg.Connection) -> None:
@@ -83,12 +121,18 @@ async def init_db() -> None:
     global _pool
     _pool = await asyncpg.create_pool(
         _DATABASE_URL,
-        min_size=2,
-        max_size=10,
+        min_size=settings.db_pool_min,
+        max_size=settings.db_pool_max,
         init=_init_connection,
     )
     async with _pool.acquire() as conn:
         await conn.execute(_SCHEMA)
+        for migration in _MIGRATIONS:
+            try:
+                await conn.execute(migration)
+            except Exception as exc:
+                # Migrations are best-effort; log but don't crash
+                _logger.debug("Migration skipped (%s): %s", migration[:60], exc)
     _logger.info("Database pool initialised (%s)", _DATABASE_URL)
 
 
@@ -118,8 +162,9 @@ async def store_investigation(
             (case_id, alert_type, risk_level, risk_score, recommended_action,
              amount, currency, confidence, flags, entity_profile,
              transaction_pattern, risk_assessment, investigation_narrative,
-             processing_time_ms, model_used, canary, constitutional_check_passed)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+             processing_time_ms, model_used, canary, constitutional_check_passed,
+             tokenized_payload)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
         ON CONFLICT (case_id) DO NOTHING
         """,
         str(report.case_id),
@@ -139,4 +184,5 @@ async def store_investigation(
         report.model_used,
         report.canary,
         report.constitutional_check_passed,
+        report.tokenized_payload,
     )

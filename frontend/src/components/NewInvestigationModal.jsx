@@ -31,7 +31,12 @@ export default function NewInvestigationModal({ onClose }) {
     try {
       const body = { alert: { alert_type:form.alert_type, amount:parseFloat(form.amount), transaction_id:form.transaction_id || `TXN-${Date.now()}`, rule_trigger:form.rule_trigger, entity_data:JSON.parse(form.entity_data), currency:'INR' }};
       const res = await api.post('/api/investigate', body);
-      if (res.success) { nav(`/case/${res.report.case_id}`, { state:{ caseData:res.report } }); onClose(); }
+      if (res.success) {
+        // InvestigationReport model doesn't include alert_type/amount — merge from the submitted alert
+        const caseData = { ...res.report, alert_type: body.alert.alert_type, amount: body.alert.amount, currency: body.alert.currency };
+        nav(`/case/${res.report.case_id}`, { state: { caseData } });
+        onClose();
+      }
       else setError('Investigation failed');
     } catch(e) {
       // Surface only safe messages; never expose raw fetch/parse error text.

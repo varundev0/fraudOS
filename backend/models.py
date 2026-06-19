@@ -56,7 +56,8 @@ class InvestigationReport(BaseModel):
     processing_time_ms: int
     model_used: str
     constitutional_check_passed: bool = True
-    canary: str = ""
+    canary: str = Field(default="", exclude=True)  # internal only — never serialised to API clients
+    tokenized_payload: Optional[dict] = Field(default=None, exclude=True)  # PII-safe payload stored in DB, never in API response
 
 
 class InvestigateRequest(BaseModel):

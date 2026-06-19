@@ -4,6 +4,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Login from './pages/Login';
 import CaseQueue from './pages/CaseQueue';
 import CaseDetail from './pages/CaseDetail';
+import Reports from './pages/Reports';
+import Settings from './pages/Settings';
 import { api } from './api/client';
 import './index.css';
 
@@ -40,6 +42,8 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<Guard><CaseQueue /></Guard>} />
           <Route path="/case/:caseId" element={<Guard><CaseDetail /></Guard>} />
+          <Route path="/reports" element={<Guard><Reports /></Guard>} />
+          <Route path="/settings" element={<Guard><Settings /></Guard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
