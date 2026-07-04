@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS investigations (
     canary TEXT,
     constitutional_check_passed BOOLEAN,
     tokenized_payload JSONB,
+    sla_notified_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
