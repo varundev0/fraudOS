@@ -3,7 +3,14 @@ builder = "nixpacks"
 buildCommand = "pip install -r backend/requirements.txt"
 
 [deploy]
-startCommand = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
-healthcheckPath = "/api/health"
+# --proxy-headers is required behind Railway's proxy so client IPs
+# (login rate limiting, audit logs) are read from X-Forwarded-For.
+startCommand = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'"
+healthcheckPath = "/healthz"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
+
+# Required variables (set in the Railway dashboard):
+#   DATABASE_URL, ANTHROPIC_API_KEY, FRAUDOS_TOKEN_SECRET (>= 32 chars),
+#   FRAUDOS_WEBHOOK_SECRET, FRAUDOS_ADMIN_PASSWORD
+# FRAUDOS_ENV defaults to production in code — no need to set it here.

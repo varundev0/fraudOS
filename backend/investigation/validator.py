@@ -13,6 +13,10 @@ _logger = logging.getLogger(__name__)
 _ENTITY_DATA_RE = re.compile(r"^[a-zA-Z0-9@._\-\s/,]*$")
 # Allowed characters in transaction_id
 _TXN_ID_RE = re.compile(r"^[a-zA-Z0-9\-_]+$")
+# Allowed characters in rule_trigger — rule-engine expressions, not free prose.
+# SECURITY: rule_trigger is sent to Claude untokenized, so restrict its charset
+# to close it off as a prompt-injection channel.
+_RULE_TRIGGER_RE = re.compile(r"^[a-zA-Z0-9 ._\-:,;()><=%/&+*'\"\[\]]*$")
 
 _MAX_ENTITY_FIELD_LEN = 500
 _MAX_RULE_TRIGGER_LEN = 1000
@@ -63,5 +67,8 @@ def _do_validate(alert: FraudAlert) -> None:
 
     if len(alert.rule_trigger) > _MAX_RULE_TRIGGER_LEN:
         raise ValueError(f"rule_trigger exceeds {_MAX_RULE_TRIGGER_LEN} characters")
+
+    if not _RULE_TRIGGER_RE.match(alert.rule_trigger):
+        raise ValueError("rule_trigger contains disallowed characters")
 
     _check_entity_dict(alert.entity_data)

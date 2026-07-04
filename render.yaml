@@ -2,9 +2,13 @@ services:
   - type: web
     name: fraudos-backend
     runtime: python
-    buildCommand: pip install -r backend/requirements.txt
-    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /api/health
+    # Build the SPA into frontend/dist so the backend serves it same-origin
+    # (keeps SameSite=strict session cookies working with zero CORS config).
+    buildCommand: pip install -r backend/requirements.txt && cd frontend && npm ci && npm run build
+    # --proxy-headers is required behind Render's load balancer so client IPs
+    # (login rate limiting, audit logs) are read from X-Forwarded-For.
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'
+    healthCheckPath: /healthz
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -14,12 +18,12 @@ services:
         value: production
       - key: FRAUDOS_TOKEN_SECRET
         generateValue: true
+      - key: FRAUDOS_WEBHOOK_SECRET
+        generateValue: true
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: FRAUDOS_ADMIN_PASSWORD
         sync: false
-      - key: FRAUDOS_API_KEY
-        generateValue: true
 
 databases:
   - name: fraudos-db

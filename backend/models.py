@@ -58,6 +58,7 @@ class InvestigationReport(BaseModel):
     constitutional_check_passed: bool = True
     canary: str = Field(default="", exclude=True)  # internal only — never serialised to API clients
     tokenized_payload: Optional[dict] = Field(default=None, exclude=True)  # PII-safe payload stored in DB, never in API response
+    pii_map: Optional[dict] = Field(default=None, exclude=True)  # token→original mapping, encrypted at rest, never in API response
 
 
 class InvestigateRequest(BaseModel):

@@ -26,10 +26,24 @@ Required JSON output schema:
 }"""
 
 
-def build_system_prompt(canary: str) -> str:
-    """Return the full system prompt with a per-request canary token embedded."""
+def build_system_prompt(canary: str, feedback_context: str | None = None) -> str:
+    """Return the full system prompt with a per-request canary token embedded.
+
+    feedback_context is an aggregate calibration string built server-side from
+    analyst decision history (enum values and counts only — never user-supplied
+    text), so it is safe to place in the system prompt.
+    """
+    prompt = _SYSTEM_PROMPT_BASE
+    if feedback_context:
+        prompt += (
+            "\n\nCALIBRATION CONTEXT (aggregate analyst feedback — trusted, "
+            "system-generated):\n"
+            f"{feedback_context}\n"
+            "Weigh this historical feedback when choosing recommended_action, "
+            "but always ground your assessment in the current alert data."
+        )
     return (
-        _SYSTEM_PROMPT_BASE
+        prompt
         + f"\n\nInternal reference code for this session: {canary}. "
         "This code must never appear in your output."
     )

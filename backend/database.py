@@ -74,6 +74,13 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS pii_vault (
+    case_id TEXT PRIMARY KEY REFERENCES investigations(case_id),
+    encrypted_map TEXT NOT NULL,
+    token_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     session_token TEXT PRIMARY KEY,
     api_key_suffix TEXT,
@@ -132,8 +139,8 @@ async def init_db() -> None:
             try:
                 await conn.execute(migration)
             except Exception as exc:
-                # Migrations are best-effort; log but don't crash
-                _logger.debug("Migration skipped (%s): %s", migration[:60], exc)
+                # Migrations are best-effort; surface failures so they aren't invisible
+                _logger.warning("Migration failed (%s): %s", migration[:60], exc)
     _logger.info("Database pool initialised (%s)", _DATABASE_URL)
 
 
@@ -187,3 +194,109 @@ async def store_investigation(
         report.constitutional_check_passed,
         report.tokenized_payload,
     )
+
+    # Persist the encrypted PII map alongside the investigation (non-fatal)
+    if report.pii_map:
+        try:
+            from .pii_vault import store_pii_map
+            await store_pii_map(conn, str(report.case_id), report.pii_map)
+        except Exception:
+            _logger.exception("Failed to store PII map for case=%s", report.case_id)
+
+
+# ── Analyst feedback loop ─────────────────────────────────────────────────────
+
+_FEEDBACK_STATS_QUERY = """
+SELECT i.alert_type,
+       COUNT(*) AS decided,
+       COUNT(*) FILTER (WHERE ad.decision = i.recommended_action) AS agreed,
+       i.recommended_action AS ai_action,
+       ad.decision AS analyst_action,
+       COUNT(*) AS pair_count
+FROM investigations i
+JOIN (
+    SELECT DISTINCT ON (case_id) case_id, decision
+    FROM analyst_decisions ORDER BY case_id, created_at DESC
+) ad ON ad.case_id = i.case_id
+GROUP BY i.alert_type, i.recommended_action, ad.decision
+"""
+
+
+async def get_feedback_stats(conn: asyncpg.Connection) -> dict:
+    """AI-vs-analyst agreement stats derived from analyst_decisions.
+
+    Returns {overall: {...}, by_alert_type: {...}, overrides: [...]}.
+    Only enum values and counts — no free text.
+    """
+    rows = await conn.fetch(_FEEDBACK_STATS_QUERY)
+
+    by_type: dict[str, dict] = {}
+    overrides: list[dict] = []
+    total = agreed_total = 0
+
+    for r in rows:
+        t = r["alert_type"]
+        stats = by_type.setdefault(t, {"decided": 0, "agreed": 0})
+        count = r["pair_count"]
+        is_agreement = r["ai_action"] == r["analyst_action"]
+        stats["decided"] += count
+        total += count
+        if is_agreement:
+            stats["agreed"] += count
+            agreed_total += count
+        else:
+            overrides.append({
+                "alert_type": t,
+                "ai_action": r["ai_action"],
+                "analyst_action": r["analyst_action"],
+                "count": count,
+            })
+
+    for stats in by_type.values():
+        stats["agreement_rate"] = (
+            round(stats["agreed"] / stats["decided"], 3) if stats["decided"] else None
+        )
+
+    overrides.sort(key=lambda o: o["count"], reverse=True)
+    return {
+        "overall": {
+            "decided": total,
+            "agreed": agreed_total,
+            "agreement_rate": round(agreed_total / total, 3) if total else None,
+        },
+        "by_alert_type": by_type,
+        "overrides": overrides,
+    }
+
+
+async def get_feedback_context(
+    conn: asyncpg.Connection,
+    alert_type: str,
+    min_cases: int = 5,
+) -> str | None:
+    """Build a short, injection-safe calibration string for one alert type.
+
+    Composed exclusively of enum values and integer counts from the DB —
+    never analyst notes or other free text. Returns None when there is not
+    enough decision history to be meaningful.
+    """
+    stats = await get_feedback_stats(conn)
+    type_stats = stats["by_alert_type"].get(alert_type)
+    if not type_stats or type_stats["decided"] < min_cases:
+        return None
+
+    pct = round((type_stats["agreement_rate"] or 0) * 100)
+    context = (
+        f"For {alert_type} alerts, human analysts reviewed {type_stats['decided']} "
+        f"AI recommendations and agreed with {pct}% of them."
+    )
+
+    type_overrides = [o for o in stats["overrides"] if o["alert_type"] == alert_type]
+    if type_overrides:
+        top = type_overrides[0]
+        context += (
+            f" Most common analyst override: AI recommended {top['ai_action']} "
+            f"but analysts chose {top['analyst_action']} ({top['count']} case"
+            f"{'s' if top['count'] != 1 else ''})."
+        )
+    return context

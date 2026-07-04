@@ -16,7 +16,6 @@ from pydantic import BaseModel
 from .config import settings
 from .database import get_db
 
-_FRAUDOS_ENV = os.getenv("FRAUDOS_ENV", "development")
 _logger = logging.getLogger(__name__)
 _audit_log = logging.getLogger("fraudos.audit")
 
@@ -46,6 +45,11 @@ class _UpdateUserRequest(BaseModel):
     full_name: Optional[str] = None
 
 
+class _ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 # ── Cookie helpers ─────────────────────────────────────────────────────────────
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -53,7 +57,7 @@ def _set_session_cookie(response: Response, token: str) -> None:
         key="fraudos_session",
         value=token,
         httponly=True,
-        secure=_FRAUDOS_ENV != "development",
+        secure=not settings.is_development,
         samesite="strict",
         path="/",
         max_age=settings.session_hours * 3600,
@@ -131,6 +135,40 @@ async def me(request: Request):
     }
 
 
+@router.post("/auth/change-password")
+async def change_password(body: _ChangePasswordRequest, request: Request):
+    session = await get_current_session(request)
+
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    token = request.cookies.get("fraudos_session")
+    async with get_db() as conn:
+        user = await conn.fetchrow(
+            "SELECT id, password_hash FROM users WHERE id = $1", session["user_id"]
+        )
+        if user is None or not _pwd_ctx.verify(body.current_password, user["password_hash"]):
+            _audit_log.warning(
+                "PASSWORD_CHANGE_FAILED user=%s ip=%s",
+                session.get("user_email"),
+                request.client.host if request.client else "unknown",
+            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Current password is incorrect")
+
+        await conn.execute(
+            "UPDATE users SET password_hash = $1 WHERE id = $2",
+            _pwd_ctx.hash(body.new_password), user["id"],
+        )
+        # Revoke every other session for this user (keep the current one)
+        await conn.execute(
+            "DELETE FROM sessions WHERE user_id = $1 AND session_token <> $2",
+            user["id"], token,
+        )
+
+    _audit_log.info("PASSWORD_CHANGED user=%s", session.get("user_email"))
+    return {"success": True}
+
+
 @router.post("/auth/logout")
 async def logout(request: Request, response: Response):
     token = request.cookies.get("fraudos_session")
@@ -144,7 +182,12 @@ async def logout(request: Request, response: Response):
 # ── Session dependency ────────────────────────────────────────────────────────
 
 async def get_current_session(request: Request) -> dict:
-    """FastAPI dependency — validates session cookie, returns session row or raises 401."""
+    """FastAPI dependency — validates session cookie, returns session dict or raises 401.
+
+    SECURITY: role and is_active are read live from the users table on every
+    request, so deactivating a user or changing their role takes effect
+    immediately instead of at session expiry.
+    """
     token = request.cookies.get("fraudos_session")
 
     if token is None:
@@ -152,9 +195,20 @@ async def get_current_session(request: Request) -> dict:
 
     async with get_db() as conn:
         row = await conn.fetchrow(
-            "SELECT * FROM sessions WHERE session_token = $1 AND expires_at > NOW()",
+            """
+            SELECT s.session_token, s.user_id, s.user_email, s.full_name,
+                   s.created_at, s.expires_at,
+                   u.role AS user_role, u.is_active
+            FROM sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.session_token = $1 AND s.expires_at > NOW()
+            """,
             token,
         )
+        if row is not None and not row["is_active"]:
+            # Deactivated user — revoke the session immediately
+            await conn.execute("DELETE FROM sessions WHERE session_token = $1", token)
+            row = None
 
     if row is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
@@ -261,6 +315,10 @@ async def update_user(
             *params,
         )
 
+        # SECURITY: deactivation revokes all of the user's sessions immediately
+        if body.is_active is False:
+            await conn.execute("DELETE FROM sessions WHERE user_id = $1", user_uuid)
+
     _audit_log.info("USER_UPDATED id=%s by=%s changes=%s", user_id, session.get("user_email"), body.model_dump(exclude_none=True))
     return dict(row)
 
@@ -271,7 +329,7 @@ async def seed_admin_user() -> None:
     """Create the default admin account if no users exist yet."""
     password = os.getenv("FRAUDOS_ADMIN_PASSWORD", "")
     if not password:
-        if _FRAUDOS_ENV == "development":
+        if settings.is_development:
             password = "admin123"
             _logger.warning(
                 "No FRAUDOS_ADMIN_PASSWORD set — using default dev password."

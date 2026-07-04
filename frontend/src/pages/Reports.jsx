@@ -92,6 +92,13 @@ export default function Reports() {
 
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: () => api.getMe(), staleTime: 300_000 });
 
+  const { data: feedback } = useQuery({
+    queryKey: ['feedback-stats'],
+    queryFn: () => api.get('/api/reports/feedback'),
+    retry: 1,
+    staleTime: 60_000,
+  });
+
   const isDemo = isError || (!isLoading && (!apiCases || apiCases.length === 0));
   const cases = useMemo(
     () => (isDemo ? MOCK_CASES : (apiCases || [])).map(computeSLA),
@@ -111,9 +118,7 @@ export default function Reports() {
 
   const byRisk   = Object.fromEntries(RISK_ORDER.map(r   => [r,   cases.filter(c => c.risk_level          === r).length]));
   const byAction = Object.fromEntries(ACTION_ORDER.map(a => [a,   cases.filter(c => c.recommended_action  === a).length]));
-  const byType   = Object.fromEntries(TYPE_ORDER.map(t   => [t,   cases.filter(c => c.alert_type          === t).length]));
   const bySla    = Object.fromEntries(SLA_ORDER.map(s    => [s,   cases.filter(c => c.sla_status          === s).length]));
-  const resolvedCases = cases.filter(c => c.sla_status === 'RESOLVED');
 
   const avgScoreByType = TYPE_ORDER.map(t => {
     const group = cases.filter(c => c.alert_type === t);
@@ -224,6 +229,42 @@ export default function Reports() {
                 </div>
               )}
             </div>
+
+            {/* AI vs Analyst agreement — the feedback loop */}
+            {feedback?.overall?.decided > 0 && (
+              <div style={card({ marginBottom: 10 })}>
+                <span style={lbl}>AI vs Analyst Agreement <span style={{ color: 'var(--cyan)', fontSize: '0.58rem' }}>· FEEDBACK LOOP</span></span>
+                <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 20, alignItems: 'start' }}>
+                  <div style={{ textAlign: 'center', padding: '14px 10px', background: 'var(--surface2)', border: '1px solid var(--border)' }}>
+                    <div style={{ fontSize: '2.6rem', fontWeight: 900, color: 'var(--cyan)', lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
+                      {Math.round((feedback.overall.agreement_rate || 0) * 100)}%
+                    </div>
+                    <div style={{ fontSize: '0.65rem', color: 'var(--muted)', marginTop: 8 }}>
+                      analysts agreed with AI on {feedback.overall.agreed} of {feedback.overall.decided} decided cases
+                    </div>
+                  </div>
+                  <div>
+                    {Object.entries(feedback.by_alert_type).map(([type, s]) => (
+                      <BarRow
+                        key={type}
+                        label={ALERT_LABELS[type] || type}
+                        count={s.agreed}
+                        total={s.decided}
+                        color="var(--cyan)"
+                        sublabel={`${s.decided > 0 ? Math.round((s.agreement_rate || 0) * 100) : 0}% of ${s.decided}`}
+                      />
+                    ))}
+                    {feedback.overrides.length > 0 && (
+                      <div style={{ marginTop: 10, padding: '8px 12px', background: 'var(--surface2)', border: '1px solid var(--border)', fontSize: '0.72rem', color: 'var(--muted)' }}>
+                        Top override: AI said <strong style={{ color: ACTION_COLORS[feedback.overrides[0].ai_action] }}>{feedback.overrides[0].ai_action}</strong>,
+                        analysts chose <strong style={{ color: ACTION_COLORS[feedback.overrides[0].analyst_action] }}>{feedback.overrides[0].analyst_action}</strong> ({feedback.overrides[0].count}× · {ALERT_LABELS[feedback.overrides[0].alert_type]}) —
+                        this history is fed back into new investigations as calibration context.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Recent cases */}
             <div style={card()}>

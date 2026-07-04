@@ -16,6 +16,67 @@ const DECISION_BTNS = [
 const card = (extra={}) => ({ background:'var(--surface)', border:'1px solid var(--border)', padding:'18px 20px', marginBottom:10, ...extra });
 const lbl = { fontSize:'0.62rem', color:'var(--muted)', letterSpacing:'0.18em', textTransform:'uppercase', marginBottom:8, display:'block' };
 
+const TOKEN_TYPE_LABELS = {
+  USR: 'Name', MER: 'Merchant', ADDR: 'Address', EML: 'Email', UPI: 'UPI ID', PHN: 'Phone',
+};
+
+function PiiRevealPanel({ caseId }) {
+  const [revealed, setRevealed] = useState(false);
+  const [piiData, setPiiData] = useState(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const reveal = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await api.get(`/api/investigations/${caseId}/pii`);
+      setPiiData(data);
+      setRevealed(true);
+    } catch (e) {
+      setError(e.message.includes('404')
+        ? 'No PII map stored for this case'
+        : 'PII access denied or unavailable');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={card({ borderLeft: '2px solid var(--risk-block)' })}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+        <span style={{ ...lbl, marginBottom: 0 }}>
+          PII Re-identification <span style={{ color:'var(--risk-block)', fontSize:'0.58rem' }}>· PRIVILEGED · AUDIT-LOGGED</span>
+        </span>
+        {!revealed && (
+          <button onClick={reveal} disabled={loading} style={{ background:'transparent', border:'1px solid var(--risk-block)', color:'var(--risk-block)', padding:'5px 14px', fontWeight:700, letterSpacing:'0.08em', fontSize:'0.72rem', cursor:'pointer' }}>
+            {loading ? 'DECRYPTING...' : 'REVEAL PII'}
+          </button>
+        )}
+        {revealed && (
+          <button onClick={() => { setRevealed(false); setPiiData(null); }} style={{ background:'transparent', border:'1px solid var(--border)', color:'var(--muted)', padding:'5px 14px', fontWeight:600, letterSpacing:'0.08em', fontSize:'0.72rem', cursor:'pointer' }}>
+            HIDE
+          </button>
+        )}
+      </div>
+      {error && <div style={{ fontSize:'0.78rem', color:'var(--risk-block)', marginTop: 10 }}>{error}</div>}
+      {revealed && piiData && (
+        <div style={{ marginTop: 12 }}>
+          {Object.entries(piiData.pii_map).map(([token, original]) => (
+            <div key={token} style={{ display:'flex', alignItems:'center', gap:12, padding:'7px 0', borderBottom:'1px solid var(--border)', fontSize:'0.8rem' }}>
+              <span style={{ background:'var(--surface2)', border:'1px solid var(--border)', padding:'2px 8px', fontSize:'0.65rem', color:'var(--muted)', minWidth:58, textAlign:'center' }}>
+                {TOKEN_TYPE_LABELS[token.split('-')[0]] || token.split('-')[0]}
+              </span>
+              <span style={{ fontFamily:'monospace', fontSize:'0.72rem', color:'var(--muted)' }}>{token}</span>
+              <span style={{ marginLeft:'auto', fontWeight:600 }}>{original}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CaseDetail() {
   const { caseId } = useParams();
   const { state } = useLocation();
@@ -29,6 +90,9 @@ export default function CaseDetail() {
     retry: 1,
     staleTime: 30_000,
   });
+
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: () => api.getMe(), staleTime: 300_000 });
+  const canRevealPii = me?.role === 'ADMIN' || me?.role === 'SUPERVISOR';
 
   const c = state?.caseData || apiCase || MOCK_CASES.find(x => x.case_id === caseId) || {};
   const [decision, setDecision] = useState('');
@@ -179,6 +243,9 @@ export default function CaseDetail() {
             <p style={{ fontSize:'0.88rem', lineHeight:1.7 }}>{c.investigation_narrative}</p>
           </div>
         )}
+
+        {/* PII re-identification (ADMIN / SUPERVISOR only) */}
+        {canRevealPii && <PiiRevealPanel caseId={c.case_id} />}
       </main>
 
       {/* Decision + SAR panel */}

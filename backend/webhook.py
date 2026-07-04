@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from .database import get_db, store_investigation
+from .config import settings
+from .database import get_db, get_feedback_context, store_investigation
 from .investigation.engine_instance import engine as _engine
 from .models import FraudAlert
 from .notifications import notify_critical_case
@@ -32,19 +33,46 @@ _REPLAY_WINDOW_SECONDS = 300         # 5 minutes
 # Entries older than _REPLAY_WINDOW_SECONDS are pruned by the session cleanup loop.
 _seen_signatures: dict[str, float] = {}
 
+# Per-IP webhook rate limiting — bounds Anthropic API spend if the webhook
+# secret is ever leaked. In-memory: valid for a single-process deployment.
+_webhook_rate_store: dict[str, list[float]] = {}
+
 
 def prune_seen_signatures() -> None:
-    """Remove replay-protection entries older than the replay window (called from cleanup loop)."""
+    """Remove replay-protection and rate-limit entries older than their windows."""
     cutoff = time.time() - _REPLAY_WINDOW_SECONDS
     expired = [sig for sig, ts in _seen_signatures.items() if ts < cutoff]
     for sig in expired:
         del _seen_signatures[sig]
 
+    rate_cutoff = time.time() - settings.webhook_rate_limit_window
+    stale = [ip for ip, ts_list in _webhook_rate_store.items() if not any(t > rate_cutoff for t in ts_list)]
+    for ip in stale:
+        del _webhook_rate_store[ip]
+
+
+def _check_webhook_rate_limit(ip: str) -> None:
+    now = time.time()
+    cutoff = now - settings.webhook_rate_limit_window
+    timestamps = [t for t in _webhook_rate_store.get(ip, []) if t > cutoff]
+    if len(timestamps) >= settings.webhook_rate_limit_max:
+        _webhook_rate_store[ip] = timestamps
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Rate limit exceeded")
+    timestamps.append(now)
+    _webhook_rate_store[ip] = timestamps
+
 
 async def _investigate_and_store(alert: FraudAlert, client_ip: str, received_at: datetime) -> None:
     """Background coroutine: run investigation, persist, broadcast, notify."""
+    feedback_context = None
     try:
-        report = await _engine.investigate(alert)
+        async with get_db() as conn:
+            feedback_context = await get_feedback_context(conn, alert.alert_type.value)
+    except Exception:
+        _logger.debug("Feedback context unavailable", exc_info=True)
+
+    try:
+        report = await _engine.investigate(alert, feedback_context=feedback_context)
     except Exception:
         _logger.exception("Webhook investigation failed for txn=%s", alert.transaction_id)
         return
@@ -89,6 +117,8 @@ async def _investigate_and_store(alert: FraudAlert, client_ip: str, received_at:
 
 @router.post("/webhook/alert", status_code=202)
 async def webhook_alert(request: Request):
+    _check_webhook_rate_limit(request.client.host if request.client else "unknown")
+
     secret = os.getenv("FRAUDOS_WEBHOOK_SECRET", "")
     sig_header = request.headers.get("X-Webhook-Signature", "")
     ts_header = request.headers.get("X-Webhook-Timestamp", "")
@@ -107,8 +137,13 @@ async def webhook_alert(request: Request):
 
     # Enforce body size limit before reading
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > _MAX_WEBHOOK_BODY_BYTES:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Request body too large")
+    if content_length:
+        try:
+            declared_length = int(content_length)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Content-Length header")
+        if declared_length > _MAX_WEBHOOK_BODY_BYTES:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Request body too large")
 
     body_bytes = await request.body()
     if len(body_bytes) > _MAX_WEBHOOK_BODY_BYTES:

@@ -22,6 +22,10 @@ export function useWebSocket({ onMessage } = {}) {
   const onMessageRef = useRef(onMessage);
   useEffect(() => { onMessageRef.current = onMessage; }, [onMessage]);
 
+  // Self-reference so the reconnect timer can call the latest connect
+  // without referencing the const binding inside its own initializer.
+  const connectRef = useRef(null);
+
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
 
@@ -62,7 +66,7 @@ export function useWebSocket({ onMessage } = {}) {
     sock.onclose = () => {
       if (!mountedRef.current) return;
       // Reconnect after 5 seconds
-      retryRef.current = setTimeout(connect, 5000);
+      retryRef.current = setTimeout(() => connectRef.current?.(), 5000);
     };
 
     sock.onerror = () => {
@@ -72,6 +76,8 @@ export function useWebSocket({ onMessage } = {}) {
 
     wsRef.current = sock;
   }, [qc]); // qc is stable
+
+  useEffect(() => { connectRef.current = connect; }, [connect]);
 
   useEffect(() => {
     mountedRef.current = true;

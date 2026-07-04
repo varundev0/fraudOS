@@ -88,7 +88,11 @@ class InvestigationEngine:
         self._model = os.getenv("MODEL", "claude-opus-4-6")
         self._audit_model = settings.audit_model
 
-    async def investigate(self, alert: FraudAlert) -> InvestigationReport:
+    async def investigate(
+        self,
+        alert: FraudAlert,
+        feedback_context: str | None = None,
+    ) -> InvestigationReport:
         start_ms = int(time.time() * 1000)
         txn_hash = _hash_txn(alert.transaction_id)
 
@@ -108,11 +112,11 @@ class InvestigationEngine:
 
         try:
             # ── Layer 2: PII tokenization ──────────────────────────────────
-            tokenized_payload, _pii_map = tokenize_alert(alert)
+            tokenized_payload, pii_map = tokenize_alert(alert)
 
             # ── Layer 3: Claude inference ──────────────────────────────────
             # Canary token is embedded in the system prompt here for Layer 4 check
-            system_prompt = build_system_prompt(canary)
+            system_prompt = build_system_prompt(canary, feedback_context)
             user_prompt = build_investigation_prompt(tokenized_payload)
 
             response = await self._client.messages.create(
@@ -233,4 +237,5 @@ class InvestigationEngine:
             constitutional_check_passed=constitutional_check_passed,
             canary=canary,
             tokenized_payload=tokenized_payload,
+            pii_map=pii_map,
         )

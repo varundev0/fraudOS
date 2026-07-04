@@ -897,13 +897,17 @@ If the backend is not running or the database is unavailable, the Case Queue wil
 | 2     | Analyst workbench UI (Command Center theme)        | Complete  |
 | 3     | PostgreSQL persistence, session auth, webhook ingest, SAR export, security hardening | Complete |
 
+### Since built (v0.4–v0.6)
+
+- **Multi-user auth (v0.4):** Per-analyst accounts (`users` table) with bcrypt passwords, ANALYST / SUPERVISOR / ADMIN roles, admin user management UI on the Settings page, and sessions tied to `user_id`. Constant-time credential verification.
+- **Reports and Settings pages (v0.4–v0.5):** Full analytics page (`/reports`) and Settings page (`/settings`) with user management.
+- **Timing-safe comparisons:** Webhook uses HMAC-SHA256 signatures verified via `hmac.compare_digest` with timestamp + replay protection; login uses bcrypt verification with a dummy-hash path to prevent timing oracles.
+- **Tokenized payload storage:** `store_investigation()` populates the `tokenized_payload` column.
+- **PII vault (v0.6, `pii_vault.py`):** The `pii_map` from `tokenize_alert()` is encrypted with Fernet (key derived from `FRAUDOS_TOKEN_SECRET`, domain-separated) and stored in the `pii_vault` table. `GET /api/investigations/{case_id}/pii` allows ADMIN/SUPERVISOR re-identification; every access is written to `audit_log` as a `PII_ACCESS` event. CaseDetail shows a "Reveal PII" panel for privileged roles.
+- **Analyst feedback loop (v0.6):** `GET /api/reports/feedback` reports AI-vs-analyst agreement rates and override patterns (latest decision per case). Per-alert-type aggregate feedback (enum values and counts only — never free text) is injected into the investigation system prompt as calibration context once ≥5 decided cases exist for that alert type. Surfaced on the Reports page as "AI vs Analyst Agreement".
+
 ### What is not yet built
 
-- **Multi-user auth:** The current model uses a single shared `FRAUDOS_API_KEY`. There is no per-analyst account system, role-based access control, or MFA. The `sessions` table stores `api_key_suffix` as a proxy for analyst identity, but all analysts share one credential.
 - **Real bank integrations:** Alert ingestion is limited to the manual UI form and the webhook endpoint. There is no native integration with banking core systems, UPI switch feeds, card network feeds, or fraud detection platforms.
-- **Reports and Settings pages:** `Sidebar` links to `/reports` and `/settings`, but no page components exist for these routes. They are currently stub navigation items.
-- **Model fine-tuning on case outcomes:** Analyst decisions (`CLEAR` / `REVIEW` / `ESCALATE` / `BLOCK`) are stored in `analyst_decisions` but are not yet used as training signal for the investigation model. The feedback loop from analyst ground truth to model improvement is not implemented.
 - **SAR e-filing:** The SAR export produces a plain-text draft suitable for manual review and filing. There is no integration with regulatory e-filing systems (e.g. FIU-IND's FINnet gateway).
-- **Session token comparison:** The API key comparison in `auth.py` uses Python string equality (`body.api_key != expected`), which is not timing-safe. For production use, `hmac.compare_digest` should be used instead.
-- **Tokenized payload storage:** The `tokenized_payload` column exists in the `investigations` table but is not populated by `store_investigation()`; this field is reserved for a future feature.
-- **PII map persistence:** The `pii_map` (token → original value) returned by `tokenize_alert()` is discarded after each request. There is no server-side vault for re-identification when needed for investigations.
+- **Model fine-tuning:** The feedback loop injects analyst decision history as prompt context; actual fine-tuning of model weights on case outcomes is not implemented.
